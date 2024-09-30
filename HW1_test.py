@@ -11,10 +11,20 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 # Hyperparameters
 random_seed = 123
 # best practice to use learning rate decay after initial training
-learning_rate = 1e-2  # Lower learning rate to prevent NaN
+learning_rate = 1e-3  # Lower learning rate to prevent NaN
 #adjusted number of epochs after adding other overfitting preventative techniques
+# num_epochs = 35
 num_epochs = 15
-batch_size = 256
+batch_size_train = 25
+batch_size_test = 300
+# batch_size = 50
+# batch_size = 100
+# batch_size = 150
+# batch_size = 200
+# batch_size = 256
+# batch_size = 300
+# batch_size = 330
+# batch_size = 512
 
 num_features = 5  # 3 forces + 2 angles
 num_classes = 3   # Control efforts (one for each thruster)
@@ -30,6 +40,10 @@ num_hidden3 = 2048
 # num_hidden1 = 1024
 # num_hidden2 = 2048
 # num_hidden3 = 4096
+
+# num_hidden1 = 2048
+# num_hidden2 = 4096
+# num_hidden3 = 8192
 
 # Parameters
 # Define the ranges for the forces and angles
@@ -74,12 +88,12 @@ class DNNModel(nn.Module):
             # With batch norm weight initialization is less important slide 24
             nn.BatchNorm1d(num_hidden1),
             nn.ReLU(),
-            nn.Dropout(0.2),
+            nn.Dropout(0.5),
             # 2nd hidden layer
             nn.Linear(num_hidden1, num_hidden2, bias=False), 
             nn.BatchNorm1d(num_hidden2), 
             nn.ReLU(),
-            nn.Dropout(0.2),
+            nn.Dropout(0.5),
             # 3rd hidden layer
             nn.Linear(num_hidden2, num_hidden3), 
             nn.ReLU()
@@ -94,12 +108,12 @@ class DNNModel(nn.Module):
             nn.Linear(num_hidden3, num_hidden2, bias=False), 
             nn.BatchNorm1d(num_hidden2),
             nn.ReLU(),
-            nn.Dropout(0.2),
+            nn.Dropout(0.5),
             # 2nd hidden layer
             nn.Linear(num_hidden2, num_hidden1, bias=False),
             nn.BatchNorm1d(num_hidden1),  
             nn.ReLU(),
-            nn.Dropout(0.2),
+            nn.Dropout(0.5),
             # 3rd hidden layer
             nn.Linear(num_hidden1, num_features),  
             nn.ReLU()
@@ -125,8 +139,7 @@ model.to(device)
 
 # Weight regularization to prevent overfitting
 # slide 10
-optimizer = optim.SGD(model.parameters(), lr=learning_rate, weight_decay=1e-2)  # L2 regularization
-
+optimizer = optim.SGD(model.parameters(), lr=learning_rate, weight_decay=1e-4) 
 torch.manual_seed(random_seed)
 
 # Define max thrust (for scaling outputs)
@@ -153,12 +166,12 @@ train_loss = []
 for epoch in range(num_epochs):
     model.train()
     permutation = torch.randperm(X_train.size()[0])
-    
     epoch_loss = 0
-    for i in range(0, X_train.size()[0], batch_size):
+    
+    for i in range(0, X_train.size()[0], batch_size_train):
         optimizer.zero_grad()
         
-        indices = permutation[i:i+batch_size]
+        indices = permutation[i:i+batch_size_train]
         batch_X = X_train[indices]
         batch_Y = Y_train[indices]
         
@@ -166,6 +179,7 @@ for epoch in range(num_epochs):
         outputs, new_inputs = model(batch_X)
         
         # Define loss function
+        L0 = nn.MSELoss()(outputs,batch_Y)
         L1 = nn.MSELoss()(outputs, batch_Y) # Force errors
         L2 = nn.L1Loss()(new_inputs, batch_X) # For input reconstruction (L1 loss)
         L3 = torch.mean((outputs[1:] - outputs[:-1]) ** 2)  # L3: Loss for rate of change in thruster commands
@@ -177,44 +191,47 @@ for epoch in range(num_epochs):
         
         # Combine losses
         #loss = L1 + 0.1 * L2
-        loss = (L1 * 0.1) + (L2 * 0.5) + (L3 * 0.1) + (L4 * 0.1) + (L5 * 0.1)
+        loss = (L0 * 0.1) + (L1 * 0.1) + (L2 * 0.1) + (L3 * 0.1) + (L4 * 0.1) + (L5 * 0.1)
         
         # Backpropagation
         loss.backward()
 
-        # Clip gradients to prevent gradient explosion
+        # Clip gradients
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
         optimizer.step()
         
         epoch_loss += loss.item()
     
-    avg_test_loss = epoch_loss / (len(X_train) // batch_size)
-    train_loss.append(avg_test_loss)
-    print(f'Train Loss {epoch}: {avg_test_loss:.4f}')
+    avg_train_loss = epoch_loss / (len(X_train) // batch_size_train)
+    train_loss.append(avg_train_loss)
+    print(f'Train Loss {epoch}: {avg_train_loss:.4f}')
 
 
 # Testing using 20% of generated data
 test_loss = []
 
+#with torch.no_grad():
+
 for epoch in range(num_epochs):
     model.eval()
-    permutation = torch.randperm(X_test.size()[0])
-    
-    epoch_loss = 0
-    #with torch.no_grad():
-    for i in range(0, X_test.size()[0], batch_size):
-        # optimizer.zero_grad()
+    #permutation = torch.randperm(X_test.size()[0])
+    total_loss_test = 0
+    loss_test = 0
+    batch_count = 0
+    print("Weights after training:", model.encoder[1].weight[:2])
+    for i in range(0, X_test.size()[0], batch_size_test):
+        optimizer.zero_grad()
         
         # indices = permutation[i:i+batch_size]
         # batch_X = X_test[indices]
         # batch_Y = Y_test[indices]
         
-        batch_X = X_test[i:i+batch_size]
-        batch_Y = Y_test[i:i+batch_size]
+        batch_X_test = X_test[i:i+batch_size_test]
+        batch_Y_test = Y_test[i:i+batch_size_test]
         
         # Forward pass
-        outputs, new_inputs = model(batch_X)
+        outputs_test, new_inputs = model(batch_X_test)
         
         # Compute losses
         # L1 = L1_loss(outputs, batch_Y)
@@ -222,46 +239,75 @@ for epoch in range(num_epochs):
         # L4 = torch.sum(outputs ** 2)
         # L5 = nn.MSELoss(batch_X[:, -2:], torch.zeros_like(batch_X[:, -2:]))
         # loss_function(outputs, batch_X, batch_Y)
-        L1 = nn.MSELoss()(outputs, batch_Y) # Force errors
-        L2 = nn.L1Loss()(new_inputs, batch_X) # For input reconstruction (L1 loss)
-        L3 = torch.mean((outputs[1:] - outputs[:-1]) ** 2)  # L3: Loss for rate of change in thruster commands
-        L4 = torch.sum(outputs ** 2) # Loss to penalize high power consumption
-        L5 = nn.MSELoss()(batch_X[:, -2:], torch.zeros_like(batch_X[:, -2:])) #Loss to penalize disallowed azimuth angles
+        L0 = nn.MSELoss()(outputs_test,batch_Y_test)
+        L1 = nn.MSELoss()(outputs_test, batch_Y_test) # Force errors
+        L2 = nn.L1Loss()(new_inputs, batch_X_test) # For input reconstruction (L1 loss)
+        L3 = torch.mean((outputs_test[1:] - outputs_test[:-1]) ** 2)  # L3: Loss for rate of change in thruster commands
+        L4 = torch.sum(outputs_test ** 2) # Loss to penalize high power consumption
+        L5 = nn.MSELoss()(batch_X_test[:, -2:], torch.zeros_like(batch_X_test[:, -2:])) #Loss to penalize disallowed azimuth angles
         
         # Combine losses
         # include scaling factors pg. 5
-        loss = (L1 * 0.1) + (L2 * 0.1) + (L3 * 0.1) + (L4 * 0.1) + (L5 * 0.1)
+        loss_test = (L0 * 0.1) + (L1 * 0.1) + (L2 * 0.1) + (L3 * 0.1) + (L4 * 0.1) + (L5 * 0.1)
         
         # Backpropagation
-        loss.backward()
+        #loss_test.backward()
 
         # Clip gradients to prevent gradient explosion
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        #torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
         optimizer.step()
         
-        epoch_loss += loss.item()
+        # loss_test += loss_test.item()
+        # batch_count += 1
         
-        test_loss.append(loss.item())
+        # Accumulate total loss for this epoch
+        total_loss_test += loss_test.item()
+        print(f'Test Loss Item {epoch}: {loss_test:.4f}')
+        #print(f'Test Loss Item {epoch}: {loss_test.item():.4f}')
+        batch_count += 1
+        # epoch_loss += loss.item()
+        epoch_loss += loss_test.item()
 
-    # Calculate average test loss
-    avg_test_loss = epoch_loss / (len(X_test) // batch_size)
-    #avg_test_loss = sum(test_loss) / len(test_loss)
+    #avg_test_loss = epoch_loss / (len(X_test) // batch_size_test)
+    avg_test_loss = total_loss_test / batch_count
     test_loss.append(avg_test_loss)
     print(f'Test Loss {epoch}: {avg_test_loss:.4f}')
+
+    # Calculate and store average test loss for this epoch
+    #avg_test_loss = total_loss_test / batch_count
+    #test_loss.append(avg_test_loss)
+    # test_loss.append(total_loss_test)
+    # print(f'Test Loss {epoch}: {total_loss_test:.4f}')
+
+# Calculate average test loss
+#avg_test_loss = epoch_loss_test / (len(X_test) // batch_size_test)
+#avg_test_loss = sum(test_loss) / len(test_loss)
+
+# avg_test_loss = epoch_loss_test / batch_count
+# test_loss.append(avg_test_loss)
+# print(f'Test Loss {epoch}: {avg_test_loss:.4f}')
+
+#epochs = list(range(1, len(train_loss) + 1))  # Epoch numbers
+#test_fit = np.polyfit(epochs, test_loss, 1)  # Fit line to testing loss
 
 # Plot the training loss
 plt.plot(train_loss, label='Training Loss')
 plt.plot(test_loss, label='Testing Loss')
-plt.title('Loss vs # of Epochs')
+#plt.plot(test_fit, label='Testing Loss')
+plt.title('Loss vs Epoch #')
 plt.xlabel('Epoch')
 plt.ylabel('Epoch Loss')
+plt.grid()
 plt.legend()
 plt.show()
 plt.close()
 
-# Predict control efforts for new input data
-new_input = torch.rand(1, num_features).to(device)
-control_efforts, _ = model(new_input)
-scaled_control_efforts = control_efforts * max_thrust
-print("Predicted control efforts:", scaled_control_efforts)
+plt.figure(figsize=(8, 6))
+plt.plot(test_loss, label='Testing Loss', color='orange')
+plt.title('Testing Loss vs Epoch')
+plt.xlabel('Epoch')
+plt.ylabel('Loss')
+plt.legend()
+plt.grid()
+plt.show()
